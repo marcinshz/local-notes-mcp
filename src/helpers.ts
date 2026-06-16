@@ -3,6 +3,8 @@ import path from "path";
 import { promises as fs } from "fs";
 
 export const NOTES_DIR = path.join(process.cwd(), "notes");
+export const NOTES_INDEX_FILE = path.join(NOTES_DIR, "index.json");
+export const NOTES_RESOURCE_URI = "notes://index";
 
 export interface NoteMetadata {
   name: string;
@@ -11,6 +13,106 @@ export interface NoteMetadata {
   path: string;
   created_at: string;
   modified_at: string;
+}
+
+export type NoteIndexEntry = NoteMetadata;
+
+function notePathToRelativeFile(notePath: string): string {
+  return notePath.startsWith("notes/")
+    ? notePath.slice("notes/".length)
+    : notePath;
+}
+
+function sortIndexEntries(entries: NoteIndexEntry[]): NoteIndexEntry[] {
+  return [...entries].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function readNotesIndex(): Promise<NoteIndexEntry[]> {
+  if (!(await fileExists(NOTES_INDEX_FILE))) {
+    return [];
+  }
+
+  const raw = await fs.readFile(NOTES_INDEX_FILE, "utf-8");
+  const parsed = JSON.parse(raw) as NoteIndexEntry[];
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Invalid notes index: expected a JSON array");
+  }
+
+  return sortIndexEntries(parsed);
+}
+
+export async function writeNotesIndex(entries: NoteIndexEntry[]): Promise<void> {
+  await ensureNotesDir();
+  await fs.writeFile(
+    NOTES_INDEX_FILE,
+    `${JSON.stringify(sortIndexEntries(entries), null, 2)}\n`,
+    "utf-8",
+  );
+}
+
+export async function rebuildNotesIndexFromFiles(): Promise<NoteIndexEntry[]> {
+  const entries: NoteIndexEntry[] = [];
+
+  for (const relativePath of await listNoteFiles()) {
+    const parsed = await readNoteFile(relativePath);
+    const metadata = parsed.data as Partial<NoteMetadata>;
+
+    if (
+      !metadata.id ||
+      !metadata.name ||
+      !metadata.path ||
+      !metadata.created_at ||
+      !metadata.modified_at
+    ) {
+      continue;
+    }
+
+    entries.push({
+      id: metadata.id,
+      name: metadata.name,
+      path: metadata.path,
+      created_at: metadata.created_at,
+      modified_at: metadata.modified_at,
+      description: metadata.description ?? "Legacy note without description",
+    });
+  }
+
+  return sortIndexEntries(entries);
+}
+
+export async function ensureNotesIndex(): Promise<NoteIndexEntry[]> {
+  await ensureNotesDir();
+
+  if (await fileExists(NOTES_INDEX_FILE)) {
+    return readNotesIndex();
+  }
+
+  const entries = await rebuildNotesIndexFromFiles();
+  await writeNotesIndex(entries);
+  return entries;
+}
+
+export async function upsertNoteInIndex(entry: NoteIndexEntry): Promise<void> {
+  const entries = await readNotesIndex();
+  const index = entries.findIndex((note) => note.id === entry.id);
+
+  if (index === -1) {
+    entries.push(entry);
+  } else {
+    entries[index] = entry;
+  }
+
+  await writeNotesIndex(entries);
+}
+
+export async function removeNoteFromIndex(id: string): Promise<void> {
+  const entries = await readNotesIndex();
+  await writeNotesIndex(entries.filter((note) => note.id !== id));
+}
+
+export function formatNotesIndexResource(entries: NoteIndexEntry[]): string {
+  return JSON.stringify(entries, null, 2);
 }
 
 export async function ensureNotesDir(): Promise<void> {
@@ -149,6 +251,16 @@ export async function resolveUniqueFileName(
 }
 
 export async function findNoteFileById(id: string): Promise<string | null> {
+  const index = await readNotesIndex();
+  const entry = index.find((note) => note.id === id);
+
+  if (entry) {
+    const relativePath = notePathToRelativeFile(entry.path);
+    if (await fileExists(noteAbsolutePath(relativePath))) {
+      return relativePath;
+    }
+  }
+
   for (const relativePath of await listNoteFiles()) {
     const raw = await fs.readFile(noteAbsolutePath(relativePath), "utf-8");
     const parsed = matter(raw);
@@ -156,6 +268,7 @@ export async function findNoteFileById(id: string): Promise<string | null> {
       return relativePath;
     }
   }
+
   return null;
 }
 

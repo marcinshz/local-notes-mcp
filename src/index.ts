@@ -8,31 +8,65 @@ import { promises as fs } from "fs";
 import {
   ensureNoteDirectory,
   ensureNotesDir,
+  ensureNotesIndex,
   findNoteFileById,
   formatNoteResponse,
+  formatNotesIndexResource,
   noteAbsolutePath,
   noteRelativePath,
   readNoteFile,
+  readNotesIndex,
+  removeNoteFromIndex,
   resolveUniqueFileName,
   toolError,
+  upsertNoteInIndex,
+  NOTES_RESOURCE_URI,
   type NoteMetadata,
 } from "./helpers.js";
+
+const noteDescriptionSchema = z
+  .string()
+  .min(1)
+  .max(50)
+  .describe(
+    "Specific searchable summary (max 50 chars). Include topic, purpose, and key entities so the note can be found quickly.",
+  );
 
 const server = new McpServer({
   name: "local-notes-mcp",
   version: "1.0.0",
 });
 
+server.registerResource(
+  "notes_index",
+  NOTES_RESOURCE_URI,
+  {
+    title: "Notes Index",
+    description:
+      "JSON catalog of all notes with id, name, path, created_at, modified_at, and description",
+    mimeType: "application/json",
+  },
+  async (uri) => ({
+    contents: [
+      {
+        uri: uri.href,
+        mimeType: "application/json",
+        text: formatNotesIndexResource(await readNotesIndex()),
+      },
+    ],
+  }),
+);
+
 server.registerTool(
   "create_note",
   {
     description: "Create a new markdown note with YAML front matter metadata",
     inputSchema: z.object({
-      name: z.string().describe("Display name of the note"),
-      description: z
+      name: z
         .string()
-        .optional()
-        .describe("Short description of the note"),
+        .min(1)
+        .describe("Display name of the note"),
+      description: noteDescriptionSchema,
       content: z
         .string()
         .optional()
@@ -45,7 +79,7 @@ server.registerTool(
         ),
     }),
   },
-  async ({ name, description = "", content = "", path: notePath }) => {
+  async ({ name, description, content = "", path: notePath }) => {
     try {
       await ensureNotesDir();
       const directory = await ensureNoteDirectory(notePath);
@@ -64,6 +98,7 @@ server.registerTool(
 
       const fileContent = matter.stringify(content, metadata);
       await fs.writeFile(noteAbsolutePath(relativePath), fileContent, "utf-8");
+      await upsertNoteInIndex(metadata);
 
       return {
         content: [
@@ -126,7 +161,11 @@ server.registerTool(
     inputSchema: z.object({
       id: z.string().describe("Note UUID from metadata"),
       name: z.string().optional().describe("Updated display name"),
-      description: z.string().optional().describe("Updated description"),
+      description: noteDescriptionSchema
+        .optional()
+        .describe(
+          "Updated searchable summary (max 50 chars). Provide a new description when content, name, or path meaningfully changes; omit to keep the current description for minor edits (typos, formatting, small clarifications).",
+        ),
       content: z.string().optional().describe("Updated markdown body content"),
       path: z
         .string()
@@ -149,6 +188,15 @@ server.registerTool(
       if (name !== undefined) metadata.name = name;
       if (description !== undefined) metadata.description = description;
       metadata.modified_at = new Date().toISOString();
+
+      if (!metadata.description?.trim()) {
+        return toolError(
+          "Note description is required (1-50 characters). Provide description when updating legacy notes.",
+        );
+      }
+      if (metadata.description.length > 50) {
+        return toolError("Note description must be at most 50 characters.");
+      }
 
       const body = content !== undefined ? content : parsed.content.trim();
 
@@ -188,6 +236,8 @@ server.registerTool(
         );
       }
 
+      await upsertNoteInIndex(metadata);
+
       return {
         content: [
           {
@@ -221,6 +271,7 @@ server.registerTool(
 
       const parsed = await readNoteFile(fileName);
       await fs.unlink(noteAbsolutePath(fileName));
+      await removeNoteFromIndex(id);
 
       return {
         content: [
@@ -240,6 +291,7 @@ server.registerTool(
 
 async function main() {
   await ensureNotesDir();
+  await ensureNotesIndex();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
