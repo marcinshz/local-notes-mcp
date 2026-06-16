@@ -8,12 +8,15 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "dev:stop": "(lsof -ti :6274; lsof -ti :6277; pgrep -f 'tsx/dist/cli.mjs.*src/index.ts') 2>/dev/null | xargs kill 2>/dev/null || true",
+    "dev": "npm run dev:stop && MCP_PROXY_AUTH_TOKEN=local-dev mcp-inspector node ./node_modules/tsx/dist/cli.mjs src/index.ts",
+    "dev:server": "node ./node_modules/tsx/dist/cli.mjs watch --clear-screen=false src/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"
   },
   "devDependencies": {
+    "@modelcontextprotocol/inspector": "^0.22.0",
     "@types/node": "^22.15.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0"
