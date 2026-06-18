@@ -35,6 +35,23 @@ npm run dev:server
 
 > **Note:** MCP uses stdio for JSON-RPC — stdout must not contain log noise. Do not launch the server via `npm run` in Inspector or Cursor; use `node` + `tsx` directly (see below).
 
+## Claude Desktop config
+
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "local-notes-mcp": {
+      "command": "node",
+      "args": ["/absolute/path/to/local-notes-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop after editing (Cmd+Q, then reopen). Notes are stored under `notes/` in the project directory regardless of launch cwd.
+
 ## Cursor config
 
 Production (compiled):

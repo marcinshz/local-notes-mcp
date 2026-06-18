@@ -1,8 +1,13 @@
 import matter from "gray-matter";
 import path from "path";
+import { fileURLToPath } from "url";
 import { promises as fs } from "fs";
 
-export const NOTES_DIR = path.join(process.cwd(), "notes");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+export const NOTES_DIR = path.join(projectRoot, "notes");
 export const NOTES_INDEX_FILE = path.join(NOTES_DIR, "index.json");
 export const NOTES_RESOURCE_URI = "notes://index";
 
