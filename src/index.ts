@@ -14,8 +14,8 @@ import {
   formatNotesIndexResource,
   noteAbsolutePath,
   noteRelativePath,
+  getConsistentNotesIndex,
   readNoteFile,
-  readNotesIndex,
   removeNoteFromIndex,
   resolveUniqueFileName,
   toolError,
@@ -51,7 +51,7 @@ server.registerResource(
       {
         uri: uri.href,
         mimeType: "application/json",
-        text: formatNotesIndexResource(await readNotesIndex()),
+        text: formatNotesIndexResource(await getConsistentNotesIndex()),
       },
     ],
   }),

@@ -51,6 +51,40 @@ export async function writeNotesIndex(entries: NoteIndexEntry[]): Promise<void> 
   );
 }
 
+function indexPathsMatchDisk(
+  entries: NoteIndexEntry[],
+  diskPaths: Set<string>,
+): boolean {
+  const indexPaths = new Set(
+    entries.map((entry) => notePathToRelativeFile(entry.path)),
+  );
+
+  if (diskPaths.size !== indexPaths.size) {
+    return false;
+  }
+
+  for (const indexPath of indexPaths) {
+    if (!diskPaths.has(indexPath)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export async function getConsistentNotesIndex(): Promise<NoteIndexEntry[]> {
+  const entries = await readNotesIndex();
+  const diskPaths = new Set(await listNoteFiles());
+
+  if (indexPathsMatchDisk(entries, diskPaths)) {
+    return entries;
+  }
+
+  const rebuilt = await rebuildNotesIndexFromFiles();
+  await writeNotesIndex(rebuilt);
+  return rebuilt;
+}
+
 export async function rebuildNotesIndexFromFiles(): Promise<NoteIndexEntry[]> {
   const entries: NoteIndexEntry[] = [];
 
@@ -83,13 +117,12 @@ export async function rebuildNotesIndexFromFiles(): Promise<NoteIndexEntry[]> {
 
 export async function ensureNotesIndex(): Promise<NoteIndexEntry[]> {
   await ensureNotesDir();
+  const entries = await getConsistentNotesIndex();
 
-  if (await fileExists(NOTES_INDEX_FILE)) {
-    return readNotesIndex();
+  if (!(await fileExists(NOTES_INDEX_FILE))) {
+    await writeNotesIndex(entries);
   }
 
-  const entries = await rebuildNotesIndexFromFiles();
-  await writeNotesIndex(entries);
   return entries;
 }
 
