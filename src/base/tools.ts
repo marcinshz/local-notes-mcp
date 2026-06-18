@@ -1,13 +1,14 @@
-import crypto from "crypto";
 import matter from "gray-matter";
 import path from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { promises as fs } from "fs";
 import * as z from "zod";
 import {
+  createNotes,
+  deleteNotesDirectory,
   ensureNoteDirectory,
-  ensureNotesDir,
   findNoteFileById,
+  filterNotesByDirectory,
   formatNoteResponse,
   formatNotesIndexResource,
   noteAbsolutePath,
@@ -28,6 +29,45 @@ const noteDescriptionSchema = z
   .describe(
     "Specific searchable summary (max 50 chars). Include topic, purpose, and key entities so the note can be found quickly.",
   );
+
+const noteInputSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .describe("Display name of the note"),
+  description: noteDescriptionSchema,
+  content: z
+    .string()
+    .optional()
+    .describe("Markdown body content below the metadata section"),
+});
+
+function formatCreatedNoteResponse(note: {
+  metadata: NoteMetadata;
+  content: string;
+}): string {
+  return JSON.stringify(
+    {
+      metadata: note.metadata,
+      content: note.content.trim(),
+    },
+    null,
+    2,
+  );
+}
+
+function formatCreatedNotesResponse(
+  notes: { metadata: NoteMetadata; content: string }[],
+): string {
+  return JSON.stringify(
+    notes.map(({ metadata, content }) => ({
+      metadata,
+      content: content.trim(),
+    })),
+    null,
+    2,
+  );
+}
 
 export function registerBaseTools(server: McpServer): void {
   server.registerTool(
@@ -54,30 +94,16 @@ export function registerBaseTools(server: McpServer): void {
     },
     async ({ name, description, content = "", path: notePath }) => {
       try {
-        await ensureNotesDir();
-        const directory = await ensureNoteDirectory(notePath);
-
-        const id = crypto.randomUUID();
-        const now = new Date().toISOString();
-        const relativePath = await resolveUniqueFileName(name, id, directory);
-        const metadata: NoteMetadata = {
-          name,
-          id,
-          description,
-          path: noteRelativePath(relativePath),
-          created_at: now,
-          modified_at: now,
-        };
-
-        const fileContent = matter.stringify(content, metadata);
-        await fs.writeFile(noteAbsolutePath(relativePath), fileContent, "utf-8");
-        await upsertNoteInIndex(metadata);
+        const [created] = await createNotes(
+          [{ name, description, content }],
+          notePath,
+        );
 
         return {
           content: [
             {
               type: "text" as const,
-              text: formatNoteResponse(matter(fileContent)),
+              text: formatCreatedNoteResponse(created),
             },
           ],
         };
@@ -90,18 +116,66 @@ export function registerBaseTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "create_notes",
+    {
+      description:
+        "Create multiple markdown notes in one call. Faster than repeated create_note when saving several notes at once (e.g. roadmap stages).",
+      inputSchema: z.object({
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Shared directory path for all notes, e.g. rust-roadmap or work/projects",
+          ),
+        notes: z
+          .array(noteInputSchema)
+          .min(1)
+          .describe("Notes to create, in order"),
+      }),
+    },
+    async ({ path: notePath, notes }) => {
+      try {
+        const created = await createNotes(notes, notePath);
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: formatCreatedNotesResponse(created),
+            },
+          ],
+        };
+      } catch (error) {
+        return toolError(
+          error instanceof Error ? error.message : "Failed to create notes",
+        );
+      }
+    },
+  );
+
+  server.registerTool(
     "list_notes",
     {
       description:
-        "List all notes with id, name, path, created_at, modified_at, and description",
-      inputSchema: z.object({}),
+        "List notes with id, name, path, created_at, modified_at, and description. Optionally filter by project directory path.",
+      inputSchema: z.object({
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Filter to notes in this directory, e.g. rust-roadmap or work/projects",
+          ),
+      }),
       annotations: {
         readOnlyHint: true,
       },
     },
-    async () => {
+    async ({ path: directoryPath }) => {
       try {
-        const entries = await getConsistentNotesIndex();
+        const entries = filterNotesByDirectory(
+          await getConsistentNotesIndex(),
+          directoryPath,
+        );
         return {
           content: [
             {
@@ -290,6 +364,55 @@ export function registerBaseTools(server: McpServer): void {
       } catch (error) {
         return toolError(
           error instanceof Error ? error.message : "Failed to delete note",
+        );
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_notes_directory",
+    {
+      description:
+        "Delete a note project directory and all notes inside it (including subdirectories). Cannot delete the notes root.",
+      inputSchema: z.object({
+        path: z
+          .string()
+          .min(1)
+          .describe(
+            "Directory path to delete, e.g. rust-roadmap or work/projects",
+          ),
+      }),
+      annotations: {
+        destructiveHint: true,
+        readOnlyHint: false,
+      },
+    },
+    async ({ path: directoryPath } ) => {
+      try {
+        const { path: deletedPath, deletedNotes } =
+          await deleteNotesDirectory(directoryPath);
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  path: deletedPath,
+                  deletedCount: deletedNotes.length,
+                  deletedNotes,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (error) {
+        return toolError(
+          error instanceof Error
+            ? error.message
+            : "Failed to delete notes directory",
         );
       }
     },
