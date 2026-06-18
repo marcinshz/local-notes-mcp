@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { initBase, registerBase } from "./base/base.js";
+import { registerTeach } from "./teach/teach.js";
 
 const server = new McpServer({
   name: "local-notes-mcp",
@@ -8,6 +9,7 @@ const server = new McpServer({
 });
 
 registerBase(server);
+registerTeach(server);
 
 async function main() {
   await initBase();

@@ -2,6 +2,9 @@ import matter from "gray-matter";
 import path from "path";
 import { fileURLToPath } from "url";
 import { promises as fs } from "fs";
+import { notePathToRelativeFile, slugify } from "../shared/helpers.js";
+
+export { slugify } from "../shared/helpers.js";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -21,12 +24,6 @@ export interface NoteMetadata {
 }
 
 export type NoteIndexEntry = NoteMetadata;
-
-function notePathToRelativeFile(notePath: string): string {
-  return notePath.startsWith("notes/")
-    ? notePath.slice("notes/".length)
-    : notePath;
-}
 
 function sortIndexEntries(entries: NoteIndexEntry[]): NoteIndexEntry[] {
   return [...entries].sort((a, b) => a.name.localeCompare(b.name));
@@ -155,17 +152,6 @@ export function formatNotesIndexResource(entries: NoteIndexEntry[]): string {
 
 export async function ensureNotesDir(): Promise<void> {
   await fs.mkdir(NOTES_DIR, { recursive: true });
-}
-
-export function slugify(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .trim()
-      .replace(/[^\w\s-]/g, "")
-      .replace(/[\s_-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "note"
-  );
 }
 
 export function normalizeNoteDirectory(directory?: string): string {
