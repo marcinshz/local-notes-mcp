@@ -43,7 +43,7 @@ server.registerResource(
   {
     title: "Notes Index",
     description:
-      "JSON catalog of all notes with id, name, path, created_at, modified_at, and description",
+      "JSON catalog of all notes with id, name, path, created_at, modified_at, and description. Prefer the list_notes tool in clients that do not expose MCP resources.",
     mimeType: "application/json",
   },
   async (uri) => ({
@@ -111,6 +111,35 @@ server.registerTool(
     } catch (error) {
       return toolError(
         error instanceof Error ? error.message : "Failed to create note",
+      );
+    }
+  },
+);
+
+server.registerTool(
+  "list_notes",
+  {
+    description:
+      "List all notes with id, name, path, created_at, modified_at, and description",
+    inputSchema: z.object({}),
+    annotations: {
+      readOnlyHint: true,
+    },
+  },
+  async () => {
+    try {
+      const entries = await getConsistentNotesIndex();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: formatNotesIndexResource(entries),
+          },
+        ],
+      };
+    } catch (error) {
+      return toolError(
+        error instanceof Error ? error.message : "Failed to list notes",
       );
     }
   },
@@ -261,6 +290,10 @@ server.registerTool(
     inputSchema: z.object({
       id: z.string().describe("Note UUID from metadata"),
     }),
+    annotations:{
+      destructiveHint:true,
+      readOnlyHint:false,
+    }
   },
   async ({ id }) => {
     try {
