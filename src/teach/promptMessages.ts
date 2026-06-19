@@ -226,3 +226,81 @@ Keep it short (under ~15 lines). Use bullets or a small table if helpful.`,
     },
   ];
 }
+
+export type MockInterviewContext =
+  | { mode: "ready"; interviewSummary: string }
+  | { mode: "pick_project"; candidateList: string; topic?: string }
+  | { mode: "no_projects" };
+
+export function buildMockInterviewMessages(context: MockInterviewContext) {
+  const preamble =
+    context.mode === "no_projects"
+      ? `I want a mock interview to check my knowledge, but no learning roadmap projects were found.
+
+Tell me to run the learning_roadmap prompt first to create a plan.`
+      : context.mode === "pick_project"
+        ? `I want a mock interview${context.topic ? ` for: ${context.topic}` : ""}.
+
+Pre-filtered learning project candidates:
+${context.candidateList}
+
+Resolve the project first:
+1. If one candidate is a clear match, confirm project_path="<directory>" and continue.
+2. If several could match, list the top options and ask me to pick one.
+3. If none look right, call list_notes (no path filter) or with path filters, then read_note on overview and stage notes as needed.
+4. Once project_path is confirmed, load stage material before Phase 1.`
+        : `I want a mock interview to check my knowledge from my learning plan.
+
+Pre-loaded interview context:
+${context.interviewSummary}
+
+project_path is confirmed. Skip project discovery unless I correct it.`;
+
+  return [
+    {
+      role: "user" as const,
+      content: {
+        type: "text" as const,
+        text: `${preamble}
+
+Phase 1 — Setup (wait for my approval before asking interview questions):
+1. Confirm project and proposed stage(s). Default to default_interview_stage unless I request others.
+2. List the exact topics you will ask about — only from:
+   - Specific topics, Success criteria, Deliverables from the stage note(s)
+   - Progress / takeaways journal entries when present (what was actually discussed)
+3. Scope rules:
+   - Do not ask about topics outside the roadmap stage notes.
+   - Do not use external interview questions or material beyond the plan.
+   - Prefer eligible stages (completed / in_progress / skipped). Do not include not_started stages unless I explicitly request them (e.g. "etap 3", "pick 1 and 2", "custom: pętle z etapu 1").
+   - I may request multiple stages or specific topics — confirm the final list before starting.
+4. If default_stage_eligible=false and I did not pick a stage, tell me no stages have been started yet and ask which stage to quiz from the plan.
+5. For additional stages beyond the pre-loaded default, call read_note on those stage notes before **start**.
+6. End setup with: reply **start** to begin, or adjust the scope.
+
+Phase 2 — Interview (no teaching during questions):
+- Ask one question at a time, grounded in the confirmed topic list.
+- Use follow-ups only within the same plan topic (e.g. "a co jeśli…?", "porównaj X i Y").
+- After each answer, give only brief feedback (ok / partial / weak) — no explanations yet.
+- Do not give hints, full answers, or tutorials during the interview.
+- Continue until I say **koniec**, **stop**, **wrap up**, or similar.
+
+Phase 3 — Debrief and optional save:
+1. Summarize: strengths, gaps, and a per-topic assessment using only the confirmed topic list.
+2. For each gap, give a short explanation (teaching is allowed here only).
+3. Suggest next step (e.g. run start_studying on a weak topic).
+4. Propose a journal entry for the primary stage note:
+
+### YYYY-MM-DD — Mock interview
+- Topics covered: ...
+- Strong: ...
+- Gaps: ...
+- Review: ...
+
+5. Ask: "Save this to Progress / takeaways? (yes / edit / no)"
+6. Only on **yes**: update_note on the stage note — append the journal block to ## Progress / takeaways.
+7. Do not update the overview Progress table unless I explicitly ask to mark something complete.
+8. If I say edit, revise and ask again. If no, do not write anything.`,
+      },
+    },
+  ];
+}

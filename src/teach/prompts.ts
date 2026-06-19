@@ -9,9 +9,14 @@ import {
 import {
   buildFindLearningProjectMessages,
   buildLearningRoadmapMessages,
+  buildMockInterviewMessages,
   buildStartStudyingMessages,
   buildStudyStatusMessages,
 } from "./promptMessages.js";
+import {
+  buildInterviewPreload,
+  formatInterviewPreload,
+} from "./interviewContext.js";
 import {
   buildStudyStatus,
   formatStudyProjectPicker,
@@ -157,6 +162,64 @@ export function registerTeachPrompts(server: McpServer): void {
         messages: buildStudyStatusMessages({
           mode: "ready",
           statusSummary: formatStudyStatus(status),
+        }),
+      };
+    },
+  );
+
+  server.registerPrompt(
+    "mock_interview",
+    {
+      title: "Mock interview",
+      description:
+        "Practice interview questions from your roadmap — debrief at the end",
+      argsSchema: {
+        topic: z
+          .string()
+          .optional()
+          .describe(
+            "Topic or project name (e.g. Python). Leave empty for your roadmap.",
+          ),
+        stage: z.coerce
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Stage number to interview on. Leave empty for the default stage.",
+          ),
+      },
+    },
+    async ({ topic, stage }) => {
+      const entries = await getConsistentNotesIndex();
+      const resolution = resolveStudyProject(topic, entries);
+
+      if (resolution.type === "none") {
+        return {
+          messages: buildMockInterviewMessages({ mode: "no_projects" }),
+        };
+      }
+
+      if (resolution.type === "pick") {
+        return {
+          messages: buildMockInterviewMessages({
+            mode: "pick_project",
+            candidateList: formatStudyProjectPicker(
+              resolution.candidates,
+              resolution.topic,
+            ),
+            topic: resolution.topic,
+          }),
+        };
+      }
+
+      const status = await buildStudyStatus(resolution.projectPath, entries);
+      const preload = await buildInterviewPreload(status, entries, stage);
+
+      return {
+        messages: buildMockInterviewMessages({
+          mode: "ready",
+          interviewSummary: formatInterviewPreload(preload),
         }),
       };
     },
