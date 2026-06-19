@@ -1,4 +1,5 @@
 import { readNoteFile, type NoteIndexEntry } from "../base/helpers.js";
+import { extractMarkdownSection } from "../shared/markdown.js";
 import { notePathToRelativeFile } from "../shared/helpers.js";
 import type { StudyStageStatus, StudyStatus } from "./studyStatus.js";
 
@@ -16,27 +17,6 @@ export type InterviewPreload = {
   stageBrief: string;
   eligibleStages: StudyStageStatus[];
 };
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function extractMarkdownSection(content: string, sectionName: string): string {
-  const headingMatch = content.match(
-    new RegExp(`^## ${escapeRegExp(sectionName)}\\s*$`, "im"),
-  );
-  if (!headingMatch || headingMatch.index === undefined) {
-    return "";
-  }
-
-  const afterHeading = content.slice(
-    headingMatch.index + headingMatch[0].length,
-  );
-  const nextSection = afterHeading.search(/^## /m);
-  return (
-    nextSection === -1 ? afterHeading : afterHeading.slice(0, nextSection)
-  ).trim();
-}
 
 export function resolveInterviewStageNumber(
   status: StudyStatus,

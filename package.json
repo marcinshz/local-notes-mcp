@@ -7,6 +7,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "node --import tsx --test src/**/*.tests.ts",
     "start": "node dist/index.js",
     "dev:stop": "(lsof -ti :6274; lsof -ti :6277; pgrep -f 'tsx/dist/cli.mjs.*src/index.ts') 2>/dev/null | xargs kill 2>/dev/null || true",
     "dev": "npm run dev:stop && MCP_PROXY_AUTH_TOKEN=local-dev mcp-inspector node ./node_modules/tsx/dist/cli.mjs src/index.ts",

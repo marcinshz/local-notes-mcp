@@ -226,7 +226,8 @@ export function normalizeNoteDirectory(directory?: string): string {
 }
 
 export function noteRelativePath(relativePath: string): string {
-  return path.join("notes", relativePath);
+  const normalized = relativePath.replace(/\\/g, "/");
+  return `notes/${normalized}`.replace(/\/+/g, "/");
 }
 
 export function noteAbsolutePath(relativePath: string): string {
@@ -455,13 +456,32 @@ export async function readNoteFile(relativePath: string) {
   return matter(raw);
 }
 
-export function formatNoteResponse(parsed: matter.GrayMatterFile<string>) {
-  const metadata = parsed.data as NoteMetadata;
+export function formatNotePayload(
+  metadata: NoteMetadata,
+  content: string,
+): string {
   return JSON.stringify(
     {
       metadata,
-      content: parsed.content.trim(),
+      content: content.trim(),
     },
+    null,
+    2,
+  );
+}
+
+export function formatNoteResponse(parsed: matter.GrayMatterFile<string>) {
+  return formatNotePayload(parsed.data as NoteMetadata, parsed.content);
+}
+
+export function formatNotesPayload(
+  notes: { metadata: NoteMetadata; content: string }[],
+): string {
+  return JSON.stringify(
+    notes.map(({ metadata, content }) => ({
+      metadata,
+      content: content.trim(),
+    })),
     null,
     2,
   );

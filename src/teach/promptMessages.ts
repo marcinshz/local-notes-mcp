@@ -1,3 +1,5 @@
+import type { ProjectPromptContext } from "./projectContext.js";
+
 export function buildLearningRoadmapMessages(
   topic: string,
   projectPath: string,
@@ -99,34 +101,110 @@ Do not create or update notes — only find and report the project path.`,
   ];
 }
 
-export type StartStudyingContext =
-  | { mode: "ready"; statusSummary: string }
-  | { mode: "pick_project"; candidateList: string; topic?: string }
-  | { mode: "no_projects" };
+function buildNoProjectsPreamble(action: string): string {
+  return `${action}, but no learning roadmap projects were found.
 
-export function buildStartStudyingMessages(context: StartStudyingContext) {
-  const preamble =
-    context.mode === "no_projects"
-      ? `I want to start a study session, but no learning roadmap projects were found.
+Tell me to run the learning_roadmap prompt first to create a plan, then try again.`;
+}
 
-Tell me to run the learning_roadmap prompt first to create a plan, then try again.`
-      : context.mode === "pick_project"
-        ? `I want to start a study session${context.topic ? ` for: ${context.topic}` : ""}.
+function buildNoMatchPreamble(topic: string): string {
+  return `No learning project matched the topic: ${topic}.
+
+Tell me to:
+1. Run the learning_roadmap prompt to create a new plan for this topic, or
+2. Provide a more specific topic name (e.g. the exact project directory or roadmap title).`;
+}
+
+function buildPickProjectPreamble(
+  action: string,
+  candidateList: string,
+  topic?: string,
+  discoveryOptions?: { loadStageMaterial?: boolean },
+): string {
+  const topicSuffix = topic ? ` for: ${topic}` : "";
+  return `${action}${topicSuffix}.
 
 Pre-filtered learning project candidates:
-${context.candidateList}
+${candidateList}
 
-Phase 1 — Resolve project (do this first):
-1. If one candidate is a clear match, confirm project_path="<directory>" and continue to Phase 2.
-2. If several could match, list the top options and ask me to pick one — do not teach until I confirm.
+${buildProjectDiscoveryInstructions(discoveryOptions)}`;
+}
+
+function buildReadyPreamble(
+  action: string,
+  preloadedBlock: string,
+  loadedLabel: string,
+): string {
+  return `${action}.
+
+${loadedLabel}:
+${preloadedBlock}
+
+project_path is confirmed. Skip project discovery unless I correct it.`;
+}
+
+function buildProjectDiscoveryInstructions(options?: {
+  loadStageMaterial?: boolean;
+}): string {
+  const finalStep = options?.loadStageMaterial
+    ? "4. Once project_path is confirmed, load stage material before continuing."
+    : "4. Once project_path is confirmed, call read_note on the overview note (id from list_notes) to load the ## Progress table, then continue.";
+
+  return `Resolve the project first:
+1. If one candidate is a clear match, confirm project_path="<directory>" and continue.
+2. If several could match, list the top options and ask me to pick one.
 3. If none look right, call list_notes (no path filter) or with path filters, then read_note on overview notes as needed.
-4. Once project_path is confirmed, call read_note on the overview note (id from list_notes) to load the ## Progress table, then continue to Phase 2.`
-        : `I want to start a study session.
+${finalStep}`;
+}
 
-Pre-resolved project status (from the overview note — do not re-discover unless I correct it):
-${context.statusSummary}
+function buildProjectPreamble(
+  action: string,
+  context: ProjectPromptContext,
+  readyLabel: string,
+  discoveryOptions?: { loadStageMaterial?: boolean },
+): string {
+  switch (context.mode) {
+    case "no_projects":
+      return buildNoProjectsPreamble(action);
+    case "no_match":
+      return buildNoMatchPreamble(context.topic);
+    case "pick_project":
+      return buildPickProjectPreamble(
+        action,
+        context.candidateList,
+        context.topic,
+        discoveryOptions,
+      );
+    case "ready":
+      return buildReadyPreamble(action, context.statusSummary, readyLabel);
+  }
+}
 
-project_path is confirmed. Skip Phase 1 discovery and go straight to Phase 2.`;
+export type StartStudyingContext = ProjectPromptContext;
+
+export function buildStartStudyingMessages(context: StartStudyingContext) {
+  const preamble = buildProjectPreamble(
+    "I want to start a study session",
+    context,
+    "Pre-resolved project status (from the overview note — do not re-discover unless I correct it)",
+  );
+
+  if (context.mode !== "ready") {
+    const discoveryHint =
+      context.mode === "pick_project"
+        ? "\nDo not teach until project_path is confirmed."
+        : "";
+
+    return [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `${preamble}${discoveryHint}`,
+        },
+      },
+    ];
+  }
 
   return [
     {
@@ -176,34 +254,28 @@ Phase 4 — Wrap-up and save (only with my explicit confirmation):
   ];
 }
 
-export type StudyStatusContext =
-  | { mode: "ready"; statusSummary: string }
-  | { mode: "pick_project"; candidateList: string; topic?: string }
-  | { mode: "no_projects" };
+export type StudyStatusContext = ProjectPromptContext;
 
 export function buildStudyStatusMessages(context: StudyStatusContext) {
-  const preamble =
-    context.mode === "no_projects"
-      ? `Show my learning progress, but no learning roadmap projects were found.
+  const preamble = buildProjectPreamble(
+    context.mode === "ready"
+      ? "Show my learning progress"
+      : "Show my learning progress",
+    context,
+    "Pre-resolved project status (from the overview note)",
+  );
 
-Tell me to run the learning_roadmap prompt first to create a plan.`
-      : context.mode === "pick_project"
-        ? `Show my learning progress${context.topic ? ` for: ${context.topic}` : ""}.
-
-Pre-filtered learning project candidates:
-${context.candidateList}
-
-Resolve the project first:
-1. If one candidate is a clear match, confirm project_path="<directory>" and continue.
-2. If several could match, list the top options and ask me to pick one.
-3. If none look right, call list_notes (no path filter) or with path filters, then read_note on overview notes as needed.
-4. Once project_path is confirmed, call read_note on the overview note to load the ## Progress table.`
-        : `Show my learning progress.
-
-Pre-resolved project status (from the overview note):
-${context.statusSummary}
-
-project_path is confirmed. Do not re-discover unless I correct it.`;
+  if (context.mode !== "ready") {
+    return [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: preamble,
+        },
+      },
+    ];
+  }
 
   return [
     {
@@ -228,40 +300,23 @@ Keep it short (under ~15 lines). Use bullets or a small table if helpful.`,
 }
 
 export type MockInterviewContext =
-  | { mode: "ready"; interviewSummary: string }
-  | { mode: "pick_project"; candidateList: string; topic?: string }
-  | { mode: "no_projects" };
+  | Exclude<ProjectPromptContext, { mode: "ready" }>
+  | { mode: "ready"; interviewSummary: string };
 
 export function buildMockInterviewMessages(context: MockInterviewContext) {
-  const preamble =
-    context.mode === "no_projects"
-      ? `I want a mock interview to check my knowledge, but no learning roadmap projects were found.
+  if (context.mode === "ready") {
+    const preamble = buildReadyPreamble(
+      "I want a mock interview to check my knowledge from my learning plan",
+      context.interviewSummary,
+      "Pre-loaded interview context",
+    );
 
-Tell me to run the learning_roadmap prompt first to create a plan.`
-      : context.mode === "pick_project"
-        ? `I want a mock interview${context.topic ? ` for: ${context.topic}` : ""}.
-
-Pre-filtered learning project candidates:
-${context.candidateList}
-
-Resolve the project first:
-1. If one candidate is a clear match, confirm project_path="<directory>" and continue.
-2. If several could match, list the top options and ask me to pick one.
-3. If none look right, call list_notes (no path filter) or with path filters, then read_note on overview and stage notes as needed.
-4. Once project_path is confirmed, load stage material before Phase 1.`
-        : `I want a mock interview to check my knowledge from my learning plan.
-
-Pre-loaded interview context:
-${context.interviewSummary}
-
-project_path is confirmed. Skip project discovery unless I correct it.`;
-
-  return [
-    {
-      role: "user" as const,
-      content: {
-        type: "text" as const,
-        text: `${preamble}
+    return [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `${preamble}
 
 Phase 1 — Setup (wait for my approval before asking interview questions):
 1. Confirm project and proposed stage(s). Default to default_interview_stage unless I request others.
@@ -300,6 +355,24 @@ Phase 3 — Debrief and optional save:
 6. Only on **yes**: update_note on the stage note — append the journal block to ## Progress / takeaways.
 7. Do not update the overview Progress table unless I explicitly ask to mark something complete.
 8. If I say edit, revise and ask again. If no, do not write anything.`,
+        },
+      },
+    ];
+  }
+
+  const preamble = buildProjectPreamble(
+    "I want a mock interview",
+    context,
+    "Pre-loaded interview context",
+    { loadStageMaterial: true },
+  );
+
+  return [
+    {
+      role: "user" as const,
+      content: {
+        type: "text" as const,
+        text: preamble,
       },
     },
   ];

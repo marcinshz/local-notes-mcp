@@ -88,7 +88,7 @@ function scoreProjectMatch(
     score += 10;
   }
 
-  if (project.path.endsWith("-roadmap")) {
+  if (project.path.endsWith("-roadmap") && score > 0) {
     score += 2;
   }
 

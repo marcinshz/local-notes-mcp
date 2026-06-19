@@ -9,7 +9,9 @@ import {
   ensureNoteDirectory,
   findNoteFileById,
   filterNotesByDirectory,
+  formatNotePayload,
   formatNoteResponse,
+  formatNotesPayload,
   formatNotesIndexResource,
   noteAbsolutePath,
   noteRelativePath,
@@ -21,6 +23,46 @@ import {
   upsertNoteInIndex,
   type NoteMetadata,
 } from "./helpers.js";
+
+type ToolTextResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+};
+
+function registerToolSafe<InputSchema extends z.ZodTypeAny>(
+  server: McpServer,
+  name: string,
+  config: {
+    description: string;
+    inputSchema: InputSchema;
+    annotations?: {
+      readOnlyHint?: boolean;
+      destructiveHint?: boolean;
+    };
+  },
+  handler: (args: z.infer<InputSchema>) => Promise<ToolTextResult>,
+  fallbackMessage: string,
+): void {
+  const wrappedHandler = async (args: z.infer<InputSchema>) => {
+    try {
+      return await handler(args);
+    } catch (error) {
+      return toolError(
+        error instanceof Error ? error.message : fallbackMessage,
+      );
+    }
+  };
+
+  server.registerTool(
+    name,
+    config as Parameters<McpServer["registerTool"]>[1],
+    wrappedHandler as Parameters<McpServer["registerTool"]>[2],
+  );
+}
+
+function textResult(text: string): ToolTextResult {
+  return { content: [{ type: "text" as const, text }] };
+}
 
 const noteDescriptionSchema = z
   .string()
@@ -42,35 +84,9 @@ const noteInputSchema = z.object({
     .describe("Markdown body content below the metadata section"),
 });
 
-function formatCreatedNoteResponse(note: {
-  metadata: NoteMetadata;
-  content: string;
-}): string {
-  return JSON.stringify(
-    {
-      metadata: note.metadata,
-      content: note.content.trim(),
-    },
-    null,
-    2,
-  );
-}
-
-function formatCreatedNotesResponse(
-  notes: { metadata: NoteMetadata; content: string }[],
-): string {
-  return JSON.stringify(
-    notes.map(({ metadata, content }) => ({
-      metadata,
-      content: content.trim(),
-    })),
-    null,
-    2,
-  );
-}
-
 export function registerBaseTools(server: McpServer): void {
-  server.registerTool(
+  registerToolSafe(
+    server,
     "create_note",
     {
       description: "Create a new markdown note with YAML front matter metadata",
@@ -93,29 +109,18 @@ export function registerBaseTools(server: McpServer): void {
       }),
     },
     async ({ name, description, content = "", path: notePath }) => {
-      try {
-        const [created] = await createNotes(
-          [{ name, description, content }],
-          notePath,
-        );
+      const [created] = await createNotes(
+        [{ name, description, content }],
+        notePath,
+      );
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: formatCreatedNoteResponse(created),
-            },
-          ],
-        };
-      } catch (error) {
-        return toolError(
-          error instanceof Error ? error.message : "Failed to create note",
-        );
-      }
+      return textResult(formatNotePayload(created.metadata, created.content));
     },
+    "Failed to create note",
   );
 
-  server.registerTool(
+  registerToolSafe(
+    server,
     "create_notes",
     {
       description:
@@ -134,26 +139,14 @@ export function registerBaseTools(server: McpServer): void {
       }),
     },
     async ({ path: notePath, notes }) => {
-      try {
-        const created = await createNotes(notes, notePath);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: formatCreatedNotesResponse(created),
-            },
-          ],
-        };
-      } catch (error) {
-        return toolError(
-          error instanceof Error ? error.message : "Failed to create notes",
-        );
-      }
+      const created = await createNotes(notes, notePath);
+      return textResult(formatNotesPayload(created));
     },
+    "Failed to create notes",
   );
 
-  server.registerTool(
+  registerToolSafe(
+    server,
     "list_notes",
     {
       description:
@@ -171,28 +164,17 @@ export function registerBaseTools(server: McpServer): void {
       },
     },
     async ({ path: directoryPath }) => {
-      try {
-        const entries = filterNotesByDirectory(
-          await getConsistentNotesIndex(),
-          directoryPath,
-        );
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: formatNotesIndexResource(entries),
-            },
-          ],
-        };
-      } catch (error) {
-        return toolError(
-          error instanceof Error ? error.message : "Failed to list notes",
-        );
-      }
+      const entries = filterNotesByDirectory(
+        await getConsistentNotesIndex(),
+        directoryPath,
+      );
+      return textResult(formatNotesIndexResource(entries));
     },
+    "Failed to list notes",
   );
 
-  server.registerTool(
+  registerToolSafe(
+    server,
     "read_note",
     {
       description: "Read a note by id or file name",
@@ -205,32 +187,26 @@ export function registerBaseTools(server: McpServer): void {
       }),
     },
     async ({ id, fileName }) => {
-      try {
-        if (!id && !fileName) {
-          return toolError("Provide either id or fileName");
-        }
-
-        let resolvedFileName = fileName;
-        if (id) {
-          resolvedFileName = (await findNoteFileById(id)) ?? undefined;
-          if (!resolvedFileName) {
-            return toolError(`Note not found with id: ${id}`);
-          }
-        }
-
-        const parsed = await readNoteFile(resolvedFileName!);
-        return {
-          content: [{ type: "text" as const, text: formatNoteResponse(parsed) }],
-        };
-      } catch (error) {
-        return toolError(
-          error instanceof Error ? error.message : "Failed to read note",
-        );
+      if (!id && !fileName) {
+        return toolError("Provide either id or fileName");
       }
+
+      let resolvedFileName = fileName;
+      if (id) {
+        resolvedFileName = (await findNoteFileById(id)) ?? undefined;
+        if (!resolvedFileName) {
+          return toolError(`Note not found with id: ${id}`);
+        }
+      }
+
+      const parsed = await readNoteFile(resolvedFileName!);
+      return textResult(formatNoteResponse(parsed));
     },
+    "Failed to read note",
   );
 
-  server.registerTool(
+  registerToolSafe(
+    server,
     "update_note",
     {
       description: "Update an existing note by id",
@@ -252,85 +228,74 @@ export function registerBaseTools(server: McpServer): void {
       }),
     },
     async ({ id, name, description, content, path: notePath }) => {
-      try {
-        const currentFileName = await findNoteFileById(id);
-        if (!currentFileName) {
-          return toolError(`Note not found with id: ${id}`);
-        }
+      const currentFileName = await findNoteFileById(id);
+      if (!currentFileName) {
+        return toolError(`Note not found with id: ${id}`);
+      }
 
-        const parsed = await readNoteFile(currentFileName);
-        const metadata = parsed.data as NoteMetadata;
+      const parsed = await readNoteFile(currentFileName);
+      const metadata = parsed.data as NoteMetadata;
 
-        if (name !== undefined) metadata.name = name;
-        if (description !== undefined) metadata.description = description;
-        metadata.modified_at = new Date().toISOString();
+      if (name !== undefined) metadata.name = name;
+      if (description !== undefined) metadata.description = description;
+      metadata.modified_at = new Date().toISOString();
 
-        if (!metadata.description?.trim()) {
-          return toolError(
-            "Note description is required (1-50 characters). Provide description when updating legacy notes.",
-          );
-        }
-        if (metadata.description.length > 50) {
-          return toolError("Note description must be at most 50 characters.");
-        }
-
-        const body = content !== undefined ? content : parsed.content.trim();
-
-        let targetRelativePath = currentFileName;
-        if (name !== undefined || notePath !== undefined) {
-          const currentDirectory = path.dirname(currentFileName);
-          const directory =
-            notePath !== undefined
-              ? await ensureNoteDirectory(notePath)
-              : currentDirectory === "."
-                ? ""
-                : currentDirectory;
-
-          targetRelativePath = await resolveUniqueFileName(
-            metadata.name,
-            id,
-            directory,
-            currentFileName,
-          );
-        }
-
-        metadata.path = noteRelativePath(targetRelativePath);
-        const fileContent = matter.stringify(body, metadata);
-
-        if (targetRelativePath !== currentFileName) {
-          await fs.writeFile(
-            noteAbsolutePath(targetRelativePath),
-            fileContent,
-            "utf-8",
-          );
-          await fs.unlink(noteAbsolutePath(currentFileName));
-        } else {
-          await fs.writeFile(
-            noteAbsolutePath(currentFileName),
-            fileContent,
-            "utf-8",
-          );
-        }
-
-        await upsertNoteInIndex(metadata);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: formatNoteResponse(matter(fileContent)),
-            },
-          ],
-        };
-      } catch (error) {
+      if (!metadata.description?.trim()) {
         return toolError(
-          error instanceof Error ? error.message : "Failed to update note",
+          "Note description is required (1-50 characters). Provide description when updating legacy notes.",
         );
       }
+      if (metadata.description.length > 50) {
+        return toolError("Note description must be at most 50 characters.");
+      }
+
+      const body = content !== undefined ? content : parsed.content.trim();
+
+      let targetRelativePath = currentFileName;
+      if (name !== undefined || notePath !== undefined) {
+        const currentDirectory = path.dirname(currentFileName);
+        const directory =
+          notePath !== undefined
+            ? await ensureNoteDirectory(notePath)
+            : currentDirectory === "."
+              ? ""
+              : currentDirectory;
+
+        targetRelativePath = await resolveUniqueFileName(
+          metadata.name,
+          id,
+          directory,
+          currentFileName,
+        );
+      }
+
+      metadata.path = noteRelativePath(targetRelativePath);
+      const fileContent = matter.stringify(body, metadata);
+
+      if (targetRelativePath !== currentFileName) {
+        await fs.writeFile(
+          noteAbsolutePath(targetRelativePath),
+          fileContent,
+          "utf-8",
+        );
+        await fs.unlink(noteAbsolutePath(currentFileName));
+      } else {
+        await fs.writeFile(
+          noteAbsolutePath(currentFileName),
+          fileContent,
+          "utf-8",
+        );
+      }
+
+      await upsertNoteInIndex(metadata);
+
+      return textResult(formatNoteResponse(matter(fileContent)));
     },
+    "Failed to update note",
   );
 
-  server.registerTool(
+  registerToolSafe(
+    server,
     "delete_note",
     {
       description: "Delete a note by id",
@@ -343,33 +308,24 @@ export function registerBaseTools(server: McpServer): void {
       },
     },
     async ({ id }) => {
-      try {
-        const fileName = await findNoteFileById(id);
-        if (!fileName) {
-          return toolError(`Note not found with id: ${id}`);
-        }
-
-        const parsed = await readNoteFile(fileName);
-        await fs.unlink(noteAbsolutePath(fileName));
-        await removeNoteFromIndex(id);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Deleted note: ${JSON.stringify(parsed.data as NoteMetadata, null, 2)}`,
-            },
-          ],
-        };
-      } catch (error) {
-        return toolError(
-          error instanceof Error ? error.message : "Failed to delete note",
-        );
+      const fileName = await findNoteFileById(id);
+      if (!fileName) {
+        return toolError(`Note not found with id: ${id}`);
       }
+
+      const parsed = await readNoteFile(fileName);
+      await fs.unlink(noteAbsolutePath(fileName));
+      await removeNoteFromIndex(id);
+
+      return textResult(
+        `Deleted note: ${JSON.stringify(parsed.data as NoteMetadata, null, 2)}`,
+      );
     },
+    "Failed to delete note",
   );
 
-  server.registerTool(
+  registerToolSafe(
+    server,
     "delete_notes_directory",
     {
       description:
@@ -387,34 +343,22 @@ export function registerBaseTools(server: McpServer): void {
         readOnlyHint: false,
       },
     },
-    async ({ path: directoryPath } ) => {
-      try {
-        const { path: deletedPath, deletedNotes } =
-          await deleteNotesDirectory(directoryPath);
+    async ({ path: directoryPath }) => {
+      const { path: deletedPath, deletedNotes } =
+        await deleteNotesDirectory(directoryPath);
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  path: deletedPath,
-                  deletedCount: deletedNotes.length,
-                  deletedNotes,
-                },
-                null,
-                2,
-              ),
-            },
-          ],
-        };
-      } catch (error) {
-        return toolError(
-          error instanceof Error
-            ? error.message
-            : "Failed to delete notes directory",
-        );
-      }
+      return textResult(
+        JSON.stringify(
+          {
+            path: deletedPath,
+            deletedCount: deletedNotes.length,
+            deletedNotes,
+          },
+          null,
+          2,
+        ),
+      );
     },
+    "Failed to delete notes directory",
   );
 }

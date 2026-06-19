@@ -3,6 +3,7 @@ import {
   readNoteFile,
   type NoteIndexEntry,
 } from "../base/helpers.js";
+import { extractSectionAfterHeading } from "../shared/markdown.js";
 import { notePathToRelativeFile } from "../shared/helpers.js";
 import {
   findLearningProjectCandidates,
@@ -44,6 +45,7 @@ export type StudyProjectResolution =
       candidates: LearningProjectCandidate[];
       topic?: string;
     }
+  | { type: "no_match"; topic: string }
   | { type: "none" };
 
 const STAGE_STATUSES = new Set<StageStatus>([
@@ -56,7 +58,7 @@ const STAGE_STATUSES = new Set<StageStatus>([
 const OVERVIEW_NAME_PATTERN =
   /roadmap|plan\s+nauki|learning\s+plan|learning\s+roadmap/i;
 
-function extractStageNumber(name: string): number | null {
+export function extractStageNumber(name: string): number | null {
   const match = name.match(/(?:etap|stage)\s*(\d+)/i);
   return match ? Number.parseInt(match[1], 10) : null;
 }
@@ -68,7 +70,7 @@ function normalizeStatus(raw: string): StageStatus {
     : "not_started";
 }
 
-function parseProgressBlock(content: string): {
+export function parseProgressBlock(content: string): {
   stages: Array<{
     number: number;
     title: string;
@@ -77,15 +79,10 @@ function parseProgressBlock(content: string): {
   }>;
   currentStageNumber: number | null;
 } {
-  const headingMatch = content.match(/^## Progress\s*$/im);
-  if (!headingMatch || headingMatch.index === undefined) {
+  const block = extractSectionAfterHeading(content, /^## Progress\s*$/im);
+  if (!block) {
     return { stages: [], currentStageNumber: null };
   }
-
-  const afterHeading = content.slice(headingMatch.index + headingMatch[0].length);
-  const nextSection = afterHeading.search(/^## /m);
-  const block =
-    nextSection === -1 ? afterHeading : afterHeading.slice(0, nextSection);
 
   const currentMatch = block.match(/\*\*Current:\*\*\s*(\d+)/i);
   const currentStageNumber = currentMatch
@@ -145,16 +142,16 @@ function parseProgressBlock(content: string): {
   return { stages, currentStageNumber };
 }
 
-function parseStepsFallback(content: string): Array<{ number: number; title: string }> {
-  const headingMatch = content.match(/^## (?:Steps|Etap(?:y)?)\s*$/im);
-  if (!headingMatch || headingMatch.index === undefined) {
+export function parseStepsFallback(
+  content: string,
+): Array<{ number: number; title: string }> {
+  const block = extractSectionAfterHeading(
+    content,
+    /^## (?:Steps|Etap(?:y)?)\s*$/im,
+  );
+  if (!block) {
     return [];
   }
-
-  const afterHeading = content.slice(headingMatch.index + headingMatch[0].length);
-  const nextSection = afterHeading.search(/^## /m);
-  const block =
-    nextSection === -1 ? afterHeading : afterHeading.slice(0, nextSection);
 
   const stages: Array<{ number: number; title: string }> = [];
 
@@ -222,7 +219,7 @@ function orderStageEntries(
     });
 }
 
-function attachStageNotes(
+export function attachStageNotes(
   stages: Array<{
     number: number;
     title: string;
@@ -237,11 +234,8 @@ function attachStageNotes(
       .filter(([number]) => number !== null),
   );
 
-  return stages.map((stage, index) => {
-    const matched =
-      byNumber.get(stage.number) ??
-      stageEntries[index] ??
-      stageEntries.find((entry) => entry.name.includes(stage.title));
+  return stages.map((stage) => {
+    const matched = byNumber.get(stage.number);
 
     return {
       ...stage,
@@ -303,6 +297,10 @@ export function resolveStudyProject(
       return { type: "resolved", projectPath: candidates[0].path };
     }
 
+    if (candidates.length === 0) {
+      return { type: "no_match", topic: trimmedTopic };
+    }
+
     return { type: "pick", candidates, topic: trimmedTopic };
   }
 
@@ -321,17 +319,50 @@ export function resolveStudyProject(
   return { type: "none" };
 }
 
-export async function buildStudyStatus(
+async function loadOverviewContent(
   projectPath: string,
-  entries: NoteIndexEntry[],
-): Promise<StudyStatus> {
-  const projectEntries = filterNotesByDirectory(entries, projectPath);
+  projectEntries: NoteIndexEntry[],
+): Promise<{ overviewEntry: NoteIndexEntry; contentsById: Map<string, string> }> {
   const contentsById = new Map<string, string>();
 
-  for (const entry of projectEntries) {
-    const relativePath = notePathToRelativeFile(entry.path);
-    const parsed = await readNoteFile(relativePath);
-    contentsById.set(entry.id, parsed.content.trim());
+  async function readEntryContent(entry: NoteIndexEntry): Promise<string> {
+    const cached = contentsById.get(entry.id);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const parsed = await readNoteFile(notePathToRelativeFile(entry.path));
+    const content = parsed.content.trim();
+    contentsById.set(entry.id, content);
+    return content;
+  }
+
+  const nameCandidates = projectEntries.filter((entry) =>
+    OVERVIEW_NAME_PATTERN.test(entry.name),
+  );
+  const discoveryOrder =
+    nameCandidates.length > 0
+      ? [
+          ...nameCandidates,
+          ...projectEntries.filter(
+            (entry) => !nameCandidates.some((candidate) => candidate.id === entry.id),
+          ),
+        ]
+      : projectEntries;
+
+  for (const entry of discoveryOrder) {
+    const content = await readEntryContent(entry);
+    if (isOverviewNote(entry, content)) {
+      if (nameCandidates.length > 1) {
+        for (const candidate of nameCandidates) {
+          await readEntryContent(candidate);
+        }
+      }
+      return {
+        overviewEntry: findOverviewEntry(projectEntries, contentsById)!,
+        contentsById,
+      };
+    }
   }
 
   const overviewEntry = findOverviewEntry(projectEntries, contentsById);
@@ -340,6 +371,17 @@ export async function buildStudyStatus(
       `No overview note found in project "${projectPath}". Expected a note with Steps/Etapy section.`,
     );
   }
+
+  return { overviewEntry, contentsById };
+}
+
+export async function buildStudyStatus(
+  projectPath: string,
+  entries: NoteIndexEntry[],
+): Promise<StudyStatus> {
+  const projectEntries = filterNotesByDirectory(entries, projectPath);
+  const { overviewEntry, contentsById } =
+    await loadOverviewContent(projectPath, projectEntries);
 
   const overviewContent = contentsById.get(overviewEntry.id) ?? "";
   const { stages: progressStages, currentStageNumber } =

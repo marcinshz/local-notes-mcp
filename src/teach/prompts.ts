@@ -14,15 +14,9 @@ import {
   buildStudyStatusMessages,
 } from "./promptMessages.js";
 import {
-  buildInterviewPreload,
-  formatInterviewPreload,
-} from "./interviewContext.js";
-import {
-  buildStudyStatus,
-  formatStudyProjectPicker,
-  formatStudyStatus,
-  resolveStudyProject,
-} from "./studyStatus.js";
+  resolveMockInterviewPromptContext,
+  resolveProjectPromptContext,
+} from "./projectContext.js";
 
 export function registerTeachPrompts(server: McpServer): void {
   server.registerPrompt(
@@ -85,35 +79,10 @@ export function registerTeachPrompts(server: McpServer): void {
       },
     },
     async ({ topic }) => {
-      const entries = await getConsistentNotesIndex();
-      const resolution = resolveStudyProject(topic, entries);
-
-      if (resolution.type === "none") {
-        return {
-          messages: buildStartStudyingMessages({ mode: "no_projects" }),
-        };
-      }
-
-      if (resolution.type === "pick") {
-        return {
-          messages: buildStartStudyingMessages({
-            mode: "pick_project",
-            candidateList: formatStudyProjectPicker(
-              resolution.candidates,
-              resolution.topic,
-            ),
-            topic: resolution.topic,
-          }),
-        };
-      }
-
-      const status = await buildStudyStatus(resolution.projectPath, entries);
+      const context = await resolveProjectPromptContext(topic);
 
       return {
-        messages: buildStartStudyingMessages({
-          mode: "ready",
-          statusSummary: formatStudyStatus(status),
-        }),
+        messages: buildStartStudyingMessages(context),
       };
     },
   );
@@ -134,35 +103,10 @@ export function registerTeachPrompts(server: McpServer): void {
       },
     },
     async ({ topic }) => {
-      const entries = await getConsistentNotesIndex();
-      const resolution = resolveStudyProject(topic, entries);
-
-      if (resolution.type === "none") {
-        return {
-          messages: buildStudyStatusMessages({ mode: "no_projects" }),
-        };
-      }
-
-      if (resolution.type === "pick") {
-        return {
-          messages: buildStudyStatusMessages({
-            mode: "pick_project",
-            candidateList: formatStudyProjectPicker(
-              resolution.candidates,
-              resolution.topic,
-            ),
-            topic: resolution.topic,
-          }),
-        };
-      }
-
-      const status = await buildStudyStatus(resolution.projectPath, entries);
+      const context = await resolveProjectPromptContext(topic);
 
       return {
-        messages: buildStudyStatusMessages({
-          mode: "ready",
-          statusSummary: formatStudyStatus(status),
-        }),
+        messages: buildStudyStatusMessages(context),
       };
     },
   );
@@ -191,36 +135,10 @@ export function registerTeachPrompts(server: McpServer): void {
       },
     },
     async ({ topic, stage }) => {
-      const entries = await getConsistentNotesIndex();
-      const resolution = resolveStudyProject(topic, entries);
-
-      if (resolution.type === "none") {
-        return {
-          messages: buildMockInterviewMessages({ mode: "no_projects" }),
-        };
-      }
-
-      if (resolution.type === "pick") {
-        return {
-          messages: buildMockInterviewMessages({
-            mode: "pick_project",
-            candidateList: formatStudyProjectPicker(
-              resolution.candidates,
-              resolution.topic,
-            ),
-            topic: resolution.topic,
-          }),
-        };
-      }
-
-      const status = await buildStudyStatus(resolution.projectPath, entries);
-      const preload = await buildInterviewPreload(status, entries, stage);
+      const context = await resolveMockInterviewPromptContext(topic, stage);
 
       return {
-        messages: buildMockInterviewMessages({
-          mode: "ready",
-          interviewSummary: formatInterviewPreload(preload),
-        }),
+        messages: buildMockInterviewMessages(context),
       };
     },
   );
