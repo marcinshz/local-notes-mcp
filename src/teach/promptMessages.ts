@@ -175,3 +175,54 @@ Phase 4 — Wrap-up and save (only with my explicit confirmation):
     },
   ];
 }
+
+export type StudyStatusContext =
+  | { mode: "ready"; statusSummary: string }
+  | { mode: "pick_project"; candidateList: string; topic?: string }
+  | { mode: "no_projects" };
+
+export function buildStudyStatusMessages(context: StudyStatusContext) {
+  const preamble =
+    context.mode === "no_projects"
+      ? `Show my learning progress, but no learning roadmap projects were found.
+
+Tell me to run the learning_roadmap prompt first to create a plan.`
+      : context.mode === "pick_project"
+        ? `Show my learning progress${context.topic ? ` for: ${context.topic}` : ""}.
+
+Pre-filtered learning project candidates:
+${context.candidateList}
+
+Resolve the project first:
+1. If one candidate is a clear match, confirm project_path="<directory>" and continue.
+2. If several could match, list the top options and ask me to pick one.
+3. If none look right, call list_notes (no path filter) or with path filters, then read_note on overview notes as needed.
+4. Once project_path is confirmed, call read_note on the overview note to load the ## Progress table.`
+        : `Show my learning progress.
+
+Pre-resolved project status (from the overview note):
+${context.statusSummary}
+
+project_path is confirmed. Do not re-discover unless I correct it.`;
+
+  return [
+    {
+      role: "user" as const,
+      content: {
+        type: "text" as const,
+        text: `${preamble}
+
+Reply with a concise progress report only — do not teach and do not update notes.
+
+Include:
+1. Project name and path.
+2. Progress table summary: how many stages completed / in progress / not started.
+3. Current focus (**Current:** stage) and recommended next step.
+4. Last session dates for any stages that have them.
+5. One-line suggestion: e.g. "Run start_studying to begin Stage 2" — but do not start a lesson yourself.
+
+Keep it short (under ~15 lines). Use bullets or a small table if helpful.`,
+      },
+    },
+  ];
+}

@@ -10,6 +10,7 @@ import {
   buildFindLearningProjectMessages,
   buildLearningRoadmapMessages,
   buildStartStudyingMessages,
+  buildStudyStatusMessages,
 } from "./promptMessages.js";
 import {
   buildStudyStatus,
@@ -105,6 +106,55 @@ export function registerTeachPrompts(server: McpServer): void {
 
       return {
         messages: buildStartStudyingMessages({
+          mode: "ready",
+          statusSummary: formatStudyStatus(status),
+        }),
+      };
+    },
+  );
+
+  server.registerPrompt(
+    "study_status",
+    {
+      title: "Learning progress",
+      description:
+        "Quick summary of where you are in a learning roadmap — no teaching",
+      argsSchema: {
+        topic: z
+          .string()
+          .optional()
+          .describe(
+            "Topic or project name (e.g. Python). Leave empty for your roadmap.",
+          ),
+      },
+    },
+    async ({ topic }) => {
+      const entries = await getConsistentNotesIndex();
+      const resolution = resolveStudyProject(topic, entries);
+
+      if (resolution.type === "none") {
+        return {
+          messages: buildStudyStatusMessages({ mode: "no_projects" }),
+        };
+      }
+
+      if (resolution.type === "pick") {
+        return {
+          messages: buildStudyStatusMessages({
+            mode: "pick_project",
+            candidateList: formatStudyProjectPicker(
+              resolution.candidates,
+              resolution.topic,
+            ),
+            topic: resolution.topic,
+          }),
+        };
+      }
+
+      const status = await buildStudyStatus(resolution.projectPath, entries);
+
+      return {
+        messages: buildStudyStatusMessages({
           mode: "ready",
           statusSummary: formatStudyStatus(status),
         }),
