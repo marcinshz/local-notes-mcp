@@ -1,7 +1,15 @@
+import crypto from "crypto";
 import matter from "gray-matter";
 import path from "path";
 import { fileURLToPath } from "url";
 import { promises as fs } from "fs";
+import {
+  noteDirectoryFromMetadataPath,
+  notePathToRelativeFile,
+  slugify,
+} from "../shared/helpers.js";
+
+export { slugify } from "../shared/helpers.js";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -22,19 +30,20 @@ export interface NoteMetadata {
 
 export type NoteIndexEntry = NoteMetadata;
 
-function notePathToRelativeFile(notePath: string): string {
-  return notePath.startsWith("notes/")
-    ? notePath.slice("notes/".length)
-    : notePath;
-}
+let indexCache: NoteIndexEntry[] | null = null;
 
 function sortIndexEntries(entries: NoteIndexEntry[]): NoteIndexEntry[] {
   return [...entries].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function readNotesIndex(): Promise<NoteIndexEntry[]> {
+  if (indexCache !== null) {
+    return indexCache;
+  }
+
   if (!(await fileExists(NOTES_INDEX_FILE))) {
-    return [];
+    indexCache = [];
+    return indexCache;
   }
 
   const raw = await fs.readFile(NOTES_INDEX_FILE, "utf-8");
@@ -44,14 +53,16 @@ export async function readNotesIndex(): Promise<NoteIndexEntry[]> {
     throw new Error("Invalid notes index: expected a JSON array");
   }
 
-  return sortIndexEntries(parsed);
+  indexCache = sortIndexEntries(parsed);
+  return indexCache;
 }
 
 export async function writeNotesIndex(entries: NoteIndexEntry[]): Promise<void> {
   await ensureNotesDir();
+  indexCache = sortIndexEntries(entries);
   await fs.writeFile(
     NOTES_INDEX_FILE,
-    `${JSON.stringify(sortIndexEntries(entries), null, 2)}\n`,
+    `${JSON.stringify(indexCache, null, 2)}\n`,
     "utf-8",
   );
 }
@@ -132,40 +143,59 @@ export async function ensureNotesIndex(): Promise<NoteIndexEntry[]> {
 }
 
 export async function upsertNoteInIndex(entry: NoteIndexEntry): Promise<void> {
-  const entries = await readNotesIndex();
-  const index = entries.findIndex((note) => note.id === entry.id);
+  await upsertNotesInIndex([entry]);
+}
 
-  if (index === -1) {
-    entries.push(entry);
-  } else {
-    entries[index] = entry;
+export async function upsertNotesInIndex(
+  newEntries: NoteIndexEntry[],
+): Promise<void> {
+  const byId = new Map((await readNotesIndex()).map((note) => [note.id, note]));
+
+  for (const entry of newEntries) {
+    byId.set(entry.id, entry);
   }
 
-  await writeNotesIndex(entries);
+  await writeNotesIndex([...byId.values()]);
 }
 
 export async function removeNoteFromIndex(id: string): Promise<void> {
+  await removeNotesFromIndex([id]);
+}
+
+export async function removeNotesFromIndex(ids: string[]): Promise<void> {
+  if (ids.length === 0) {
+    return;
+  }
+
+  const idSet = new Set(ids);
   const entries = await readNotesIndex();
-  await writeNotesIndex(entries.filter((note) => note.id !== id));
+  await writeNotesIndex(entries.filter((note) => !idSet.has(note.id)));
 }
 
 export function formatNotesIndexResource(entries: NoteIndexEntry[]): string {
   return JSON.stringify(entries, null, 2);
 }
 
-export async function ensureNotesDir(): Promise<void> {
-  await fs.mkdir(NOTES_DIR, { recursive: true });
+export function filterNotesByDirectory(
+  entries: NoteIndexEntry[],
+  directory?: string,
+): NoteIndexEntry[] {
+  if (!directory?.trim()) {
+    return entries;
+  }
+
+  const normalized = normalizeNoteDirectory(directory);
+  return entries.filter((entry) => {
+    const entryDirectory = noteDirectoryFromMetadataPath(entry.path);
+    return (
+      entryDirectory === normalized ||
+      entryDirectory.startsWith(`${normalized}/`)
+    );
+  });
 }
 
-export function slugify(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .trim()
-      .replace(/[^\w\s-]/g, "")
-      .replace(/[\s_-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "note"
-  );
+export async function ensureNotesDir(): Promise<void> {
+  await fs.mkdir(NOTES_DIR, { recursive: true });
 }
 
 export function normalizeNoteDirectory(directory?: string): string {
@@ -196,7 +226,8 @@ export function normalizeNoteDirectory(directory?: string): string {
 }
 
 export function noteRelativePath(relativePath: string): string {
-  return path.join("notes", relativePath);
+  const normalized = relativePath.replace(/\\/g, "/");
+  return `notes/${normalized}`.replace(/\/+/g, "/");
 }
 
 export function noteAbsolutePath(relativePath: string): string {
@@ -259,6 +290,7 @@ export async function resolveUniqueFileName(
   id: string,
   directory = "",
   excludeRelativePath?: string,
+  reservedPaths: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const normalizedDirectory = normalizeNoteDirectory(directory);
   const base = `${slugify(name)}.md`;
@@ -267,8 +299,9 @@ export async function resolveUniqueFileName(
     : base;
 
   if (
-    !(await fileExists(noteAbsolutePath(basePath))) ||
-    basePath === excludeRelativePath
+    basePath === excludeRelativePath ||
+    (!(await fileExists(noteAbsolutePath(basePath))) &&
+      !reservedPaths.has(basePath))
   ) {
     return basePath;
   }
@@ -279,13 +312,117 @@ export async function resolveUniqueFileName(
     : suffixed;
 
   if (
-    !(await fileExists(noteAbsolutePath(suffixedPath))) ||
-    suffixedPath === excludeRelativePath
+    suffixedPath === excludeRelativePath ||
+    (!(await fileExists(noteAbsolutePath(suffixedPath))) &&
+      !reservedPaths.has(suffixedPath))
   ) {
     return suffixedPath;
   }
 
   throw new Error(`Filename conflict for note: ${name}`);
+}
+
+export type CreateNoteInput = {
+  name: string;
+  description: string;
+  content?: string;
+  path?: string;
+};
+
+export type CreatedNote = {
+  metadata: NoteMetadata;
+  content: string;
+};
+
+export async function createNotes(
+  notes: CreateNoteInput[],
+  sharedPath?: string,
+): Promise<CreatedNote[]> {
+  if (notes.length === 0) {
+    return [];
+  }
+
+  await ensureNotesDir();
+  const directory = await ensureNoteDirectory(sharedPath);
+  const now = new Date().toISOString();
+  const reservedPaths = new Set<string>();
+  const created: CreatedNote[] = [];
+
+  for (const note of notes) {
+    const id = crypto.randomUUID();
+    const noteDirectory =
+      note.path !== undefined
+        ? await ensureNoteDirectory(note.path)
+        : directory;
+    const relativePath = await resolveUniqueFileName(
+      note.name,
+      id,
+      noteDirectory,
+      undefined,
+      reservedPaths,
+    );
+    reservedPaths.add(relativePath);
+
+    const metadata: NoteMetadata = {
+      name: note.name,
+      id,
+      description: note.description,
+      path: noteRelativePath(relativePath),
+      created_at: now,
+      modified_at: now,
+    };
+
+    const body = note.content ?? "";
+    await fs.writeFile(
+      noteAbsolutePath(relativePath),
+      matter.stringify(body, metadata),
+      "utf-8",
+    );
+    created.push({ metadata, content: body.trim() });
+  }
+
+  await upsertNotesInIndex(created.map(({ metadata }) => metadata));
+  return created;
+}
+
+export type DeletedNotesDirectory = {
+  path: string;
+  deletedNotes: NoteIndexEntry[];
+};
+
+export async function deleteNotesDirectory(
+  directory: string,
+): Promise<DeletedNotesDirectory> {
+  const normalized = normalizeNoteDirectory(directory);
+  if (!normalized) {
+    throw new Error(
+      "Cannot delete the notes root; provide a project subdirectory path",
+    );
+  }
+
+  const deletedNotes = filterNotesByDirectory(
+    await getConsistentNotesIndex(),
+    normalized,
+  );
+
+  await Promise.all(
+    deletedNotes.map(async (entry) => {
+      const relativePath = notePathToRelativeFile(entry.path);
+      const absolutePath = noteAbsolutePath(relativePath);
+      if (await fileExists(absolutePath)) {
+        await fs.unlink(absolutePath);
+      }
+    }),
+  );
+
+  const directoryAbsolutePath = noteAbsolutePath(normalized);
+  if (await fileExists(directoryAbsolutePath)) {
+    await fs.rm(directoryAbsolutePath, { recursive: true, force: true });
+  }
+
+  await removeNotesFromIndex(deletedNotes.map((entry) => entry.id));
+
+  return { path: normalized, deletedNotes };
 }
 
 export async function findNoteFileById(id: string): Promise<string | null> {
@@ -319,13 +456,32 @@ export async function readNoteFile(relativePath: string) {
   return matter(raw);
 }
 
-export function formatNoteResponse(parsed: matter.GrayMatterFile<string>) {
-  const metadata = parsed.data as NoteMetadata;
+export function formatNotePayload(
+  metadata: NoteMetadata,
+  content: string,
+): string {
   return JSON.stringify(
     {
       metadata,
-      content: parsed.content.trim(),
+      content: content.trim(),
     },
+    null,
+    2,
+  );
+}
+
+export function formatNoteResponse(parsed: matter.GrayMatterFile<string>) {
+  return formatNotePayload(parsed.data as NoteMetadata, parsed.content);
+}
+
+export function formatNotesPayload(
+  notes: { metadata: NoteMetadata; content: string }[],
+): string {
+  return JSON.stringify(
+    notes.map(({ metadata, content }) => ({
+      metadata,
+      content: content.trim(),
+    })),
     null,
     2,
   );
